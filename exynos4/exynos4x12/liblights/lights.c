@@ -174,9 +174,9 @@ static int set_light_leds(struct light_state_t const *state, int type)
         break;
     case LIGHT_FLASH_TIMED:
     case LIGHT_FLASH_HARDWARE:
-            led.red = (colorRGB >> 16) & 0xFF;
-            led.green = (colorRGB >> 8) & 0xFF;
-            led.blue = colorRGB & 0xFF;
+            led.red = (((colorRGB >> 16) & 0xFF) * 20) / 255;
+            led.green = (((colorRGB >> 8) & 0xFF) * 20) / 255;
+            led.blue = ((colorRGB & 0xFF) * 20) / 255;
             snprintf(led.blink, MAX_WRITE_CMD, "0x%x %d %d", colorRGB, state->flashOnMS, state->flashOffMS);
         break;
     default:
@@ -207,9 +207,9 @@ static int set_light_battery(struct light_device_t *dev,
         led.green = 0;
         led.blue = 0;
     } else {
-        led.red = (((colorRGB >> 16) & 0xFF) / 255) * 20;
-        led.green = (((colorRGB >> 8) & 0xFF) / 255) * 20;
-        led.blue = ((colorRGB & 0xFF) / 255) * 20;
+        led.red = (((colorRGB >> 16) & 0xFF) * 20) / 255;
+        led.green = (((colorRGB >> 8) & 0xFF) * 20) / 255;
+        led.blue = ((colorRGB & 0xFF) * 20) / 255;
     }
 
     pthread_mutex_lock(&g_lock);
