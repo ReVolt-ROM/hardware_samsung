@@ -152,10 +152,18 @@ static int write_leds(struct led_config led)
     err = write_int(LED_RED, led.red);
     err = write_int(LED_GREEN, led.green);
     err = write_int(LED_BLUE, led.blue);
-    err = write_str(LED_BLINK, led.blink);
+    if (*(led.blink))
+        err = write_str(LED_BLINK, led.blink);
     pthread_mutex_unlock(&g_lock);
 
     return err;
+}
+
+static unsigned int adjust_brightness(unsigned int colorRGB, unsigned int percentage)
+{
+    return (((((colorRGB >> 16) & 0xFF) * percentage / 100) & 0xFF) << 16) |
+        (((((colorRGB >> 8) & 0xFF) * percentage / 100) & 0xFF) << 8) |
+        ((((colorRGB) & 0xFF) * percentage / 100) & 0xFF);
 }
 
 static int set_light_leds(struct light_state_t const *state, int type)
@@ -163,7 +171,10 @@ static int set_light_leds(struct light_state_t const *state, int type)
     struct led_config led;
     unsigned int colorRGB;
 
-    colorRGB = state->color;
+    if (0 == type)
+        colorRGB = adjust_brightness(state->color, 75);
+    else
+        colorRGB = state->color;
 
     switch (state->flashMode) {
     case LIGHT_FLASH_NONE:
@@ -174,9 +185,9 @@ static int set_light_leds(struct light_state_t const *state, int type)
         break;
     case LIGHT_FLASH_TIMED:
     case LIGHT_FLASH_HARDWARE:
-            led.red = (((colorRGB >> 16) & 0xFF) * 20) / 255;
-            led.green = (((colorRGB >> 8) & 0xFF) * 20) / 255;
-            led.blue = ((colorRGB & 0xFF) * 20) / 255;
+            led.red = (colorRGB >> 16) & 0xFF;
+            led.green = (colorRGB >> 8) & 0xFF;
+            led.blue = colorRGB & 0xFF;
             snprintf(led.blink, MAX_WRITE_CMD, "0x%x %d %d", colorRGB, state->flashOnMS, state->flashOffMS);
         break;
     default:
@@ -202,23 +213,20 @@ static int set_light_battery(struct light_device_t *dev,
 
     colorRGB = state->color;
 
+    *led.blink = '\0';
+
     if (brightness == 0) {
         led.red = 0;
         led.green = 0;
         led.blue = 0;
     } else {
-        led.red = (((colorRGB >> 16) & 0xFF) * 20) / 255;
-        led.green = (((colorRGB >> 8) & 0xFF) * 20) / 255;
-        led.blue = ((colorRGB & 0xFF) * 20) / 255;
+        // tone down the brightness of the battery life with /12 (255->21)
+        led.red = ((colorRGB >> 16) & 0xFF) / 12;
+        led.green = ((colorRGB >> 8) & 0xFF) / 12;
+        led.blue = (colorRGB & 0xFF) / 12;
     }
 
-    pthread_mutex_lock(&g_lock);
-    err = write_int(LED_RED, led.red);
-    err = write_int(LED_GREEN, led.green);
-    err = write_int(LED_BLUE, led.blue);
-    pthread_mutex_unlock(&g_lock);
-    
-    return err;
+    return write_leds(led);
 }
 
 static int set_light_leds_attention(struct light_device_t *dev,
