@@ -57,9 +57,20 @@ struct led_config {
     char blink[MAX_WRITE_CMD];
 };
 
+enum LED_Type {
+    LED_TYPE_NOTIFICATION = 0,
+    LED_TYPE_ATTENTION = 1,
+    LED_TYPE_CHARGING = 2,
+    LED_TYPE_LAST = 3
+};
+
+static struct led_config g_LED_states[LED_TYPE_LAST];
+
 void init_g_lock(void)
 {
     pthread_mutex_init(&g_lock, NULL);
+    // seems like a reasonable place to initialize g_LED_states...
+    memset(g_LED_states, 0, sizeof(g_LED_states));
 }
 
 static int write_int(char const *path, int value)
@@ -124,11 +135,16 @@ static int set_light_backlight(struct light_device_t *dev,
             struct light_state_t const *state)
 {
     int err = 0;
+    static int s_previous_brightness = -1;
+
     int brightness = rgb_to_brightness(state);
 
     pthread_mutex_lock(&g_lock);
     err = write_int(PANEL_FILE, brightness);
-    err = write_int(BUTTON_FILE, brightness > 0 ? 1 : 2);
+    if (!s_previous_brightness && (brightness > 0)) {
+        err = write_int(BUTTON_FILE, brightness > 0 ? 1 : 2);
+        s_previous_brightness = brightness;
+    }
     pthread_mutex_unlock(&g_lock);
 
     return err;
@@ -152,38 +168,66 @@ static int write_leds(struct led_config led)
     err = write_int(LED_RED, led.red);
     err = write_int(LED_GREEN, led.green);
     err = write_int(LED_BLUE, led.blue);
-    err = write_str(LED_BLINK, led.blink);
+    if (*(led.blink))
+        err = write_str(LED_BLINK, led.blink);
     pthread_mutex_unlock(&g_lock);
+
+    return err;
+}
+
+static unsigned int adjust_brightness(unsigned int colorRGB, unsigned int percentage)
+{
+    return (((((colorRGB >> 16) & 0xFF) * percentage / 100) & 0xFF) << 16) |
+        (((((colorRGB >> 8) & 0xFF) * percentage / 100) & 0xFF) << 8) |
+        ((((colorRGB) & 0xFF) * percentage / 100) & 0xFF);
+}
+
+static int write_leds_priority()
+{
+    // find the highest priority virtual LED that should be illuminated and 
+    // call write_leds with it
+    int i, err = 0;
+
+    for (i = 0; i < LED_TYPE_LAST; i++) {
+        // if any led colors are non-zero, use it.
+        if (g_LED_states[i].green || g_LED_states[i].red || g_LED_states[i].blue) {
+            err = write_leds(g_LED_states[i]);
+            break;
+        }
+    }
+    if (i >= LED_TYPE_LAST) // nothing should be lit?  turn it off
+        err = write_leds(g_LED_states[0]);
 
     return err;
 }
 
 static int set_light_leds(struct light_state_t const *state, int type)
 {
-    struct led_config led;
     unsigned int colorRGB;
 
-    colorRGB = state->color;
+    if (0 == type)
+        colorRGB = adjust_brightness(state->color, 75);
+    else
+        colorRGB = state->color;
 
     switch (state->flashMode) {
     case LIGHT_FLASH_NONE:
-            led.red = 0;
-            led.green = 0;
-            led.blue = 0;
-            snprintf(led.blink, MAX_WRITE_CMD, "0x000000 0 0");
+            g_LED_states[type].red = 0;
+            g_LED_states[type].green = 0;
+            g_LED_states[type].blue = 0;
+            snprintf(g_LED_states[type].blink, MAX_WRITE_CMD, "0x000000 0 0");
         break;
     case LIGHT_FLASH_TIMED:
     case LIGHT_FLASH_HARDWARE:
-            led.red = (((colorRGB >> 16) & 0xFF) * 20) / 255;
-            led.green = (((colorRGB >> 8) & 0xFF) * 20) / 255;
-            led.blue = ((colorRGB & 0xFF) * 20) / 255;
-            snprintf(led.blink, MAX_WRITE_CMD, "0x%x %d %d", colorRGB, state->flashOnMS, state->flashOffMS);
+            g_LED_states[type].red = (colorRGB >> 16) & 0xFF;
+            g_LED_states[type].green = (colorRGB >> 8) & 0xFF;
+            g_LED_states[type].blue = colorRGB & 0xFF;
+            snprintf(g_LED_states[type].blink, MAX_WRITE_CMD, "0x%x %d %d", colorRGB, state->flashOnMS, state->flashOffMS);
         break;
     default:
         return -EINVAL;
     }
-
-    return write_leds(led);
+    return write_leds_priority();
 }
 
 static int set_light_leds_notifications(struct light_device_t *dev,
@@ -202,23 +246,20 @@ static int set_light_battery(struct light_device_t *dev,
 
     colorRGB = state->color;
 
+    *(g_LED_states[LED_TYPE_CHARGING].blink) = '\0';
+
     if (brightness == 0) {
-        led.red = 0;
-        led.green = 0;
-        led.blue = 0;
+        g_LED_states[LED_TYPE_CHARGING].red = 0;
+        g_LED_states[LED_TYPE_CHARGING].green = 0;
+        g_LED_states[LED_TYPE_CHARGING].blue = 0;
     } else {
-        led.red = (((colorRGB >> 16) & 0xFF) * 20) / 255;
-        led.green = (((colorRGB >> 8) & 0xFF) * 20) / 255;
-        led.blue = ((colorRGB & 0xFF) * 20) / 255;
+        // tone down the brightness of the battery life with /12 (255->21)
+        g_LED_states[LED_TYPE_CHARGING].red = ((colorRGB >> 16) & 0xFF) / 12;
+        g_LED_states[LED_TYPE_CHARGING].green = ((colorRGB >> 8) & 0xFF) / 12;
+        g_LED_states[LED_TYPE_CHARGING].blue = (colorRGB & 0xFF) / 12;
     }
 
-    pthread_mutex_lock(&g_lock);
-    err = write_int(LED_RED, led.red);
-    err = write_int(LED_GREEN, led.green);
-    err = write_int(LED_BLUE, led.blue);
-    pthread_mutex_unlock(&g_lock);
-    
-    return err;
+    return write_leds_priority();
 }
 
 static int set_light_leds_attention(struct light_device_t *dev,
